@@ -1,10 +1,10 @@
 use std::io::Write;
 use std::os::unix::process::ExitStatusExt;
 use std::process::Command;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
-use io_filters::{ChildProcess, Filter, ReadStream, WriteStream, RunningFilter, Lambda};
+use io_filters::{ChildProcess, Filter, Lambda, ReadStream, RunningFilter, WriteStream};
 use parking_lot::{Mutex, MutexGuard};
 
 #[derive(Debug)]
@@ -14,7 +14,9 @@ struct SharedBuf {
 
 impl SharedBuf {
     pub fn new(vec: Vec<u8>) -> Self {
-        SharedBuf { inner: Mutex::new(vec) }
+        SharedBuf {
+            inner: Mutex::new(vec),
+        }
     }
 
     pub fn writer(&self) -> SharedBufWriter<'_> {
@@ -62,10 +64,27 @@ fn linux_yes_head_sha() {
     let output = Box::leak(Box::new(SharedBuf::new(vec![])));
     let output_writer = Box::new(output.writer());
 
-    let mut yes = yes.start(ReadStream::Null, WriteStream::PipeRequested).unwrap();
-    let mut head = head.start(ReadStream::Fd(yes.output_pipe().unwrap()), WriteStream::PipeRequested).unwrap();
-    let mut count = count.start(ReadStream::Fd(head.output_pipe().unwrap()), WriteStream::PipeRequested).unwrap();
-    let sha = sha.start(ReadStream::Fd(count.output_pipe().unwrap()), WriteStream::Rust(output_writer)).unwrap();
+    let mut yes = yes
+        .start(ReadStream::Null, WriteStream::PipeRequested)
+        .unwrap();
+    let mut head = head
+        .start(
+            ReadStream::Fd(yes.output_pipe().unwrap()),
+            WriteStream::PipeRequested,
+        )
+        .unwrap();
+    let mut count = count
+        .start(
+            ReadStream::Fd(head.output_pipe().unwrap()),
+            WriteStream::PipeRequested,
+        )
+        .unwrap();
+    let sha = sha
+        .start(
+            ReadStream::Fd(count.output_pipe().unwrap()),
+            WriteStream::Rust(output_writer),
+        )
+        .unwrap();
 
     let (yes, [yes_t1, yes_t2]) = yes.wait();
     assert!(!yes.as_ref().unwrap().success());
@@ -88,5 +107,8 @@ fn linux_yes_head_sha() {
     assert!(sha_t2.unwrap().is_ok());
 
     let out_str = String::from_utf8_lossy(&output.bytes()).into_owned();
-    assert_eq!(out_str, "d227b8c4d59acf0f9711af6049bd5fcde81229cd70093e36ac4f038a14ecf290  -\n");
+    assert_eq!(
+        out_str,
+        "d227b8c4d59acf0f9711af6049bd5fcde81229cd70093e36ac4f038a14ecf290  -\n"
+    );
 }
