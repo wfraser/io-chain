@@ -4,7 +4,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use io_filters::{ChildProcess, Filter, Lambda, ReadStream, RunningFilter, WriteStream};
+use io_chain::{ChildProcess, Filter, Lambda, ReadStream, RunningFilter, WriteStream};
 use parking_lot::{Mutex, MutexGuard};
 
 #[derive(Debug)]
