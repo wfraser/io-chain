@@ -46,6 +46,12 @@ impl<'a> Write for SharedBufWriter<'a> {
 #[cfg(target_os = "linux")]
 #[test]
 fn linux_yes_head_sha() {
+    // Equivalent to running in bash:
+    //   % yes | head -c $((1024*1024*512)) | sha256sum
+    // and also inserting a lambda between head and sha256sum.
+    // On my machine this runs in 2.3 seconds in both debug and release mode, the same time as the
+    // bash pipeline.
+
     let num_bytes = 1024 * 1024 * 512;
     let num_bytes_read = Arc::new(AtomicU64::new(0));
     let num_bytes_write = Arc::clone(&num_bytes_read);
