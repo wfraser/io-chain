@@ -89,7 +89,7 @@ impl RunningFilter for RunningChild {
                 Err(_) => Some(Err(ThreadPanicked::ioerr())),
                 Ok(Err(e)) => Some(Err(e)),
                 Ok(Ok(_n)) => Some(Ok(())),
-            }
+            },
             None => None,
         });
         let [read_thread, write_thread] = errs;
@@ -127,7 +127,7 @@ impl ChildExit {
                     kind: ChildExitErrorKind::ChildWait(e),
                     next: self.combine().err().map(Box::new),
                 });
-            },
+            }
             Ok(exit) if !exit.success() => {
                 return Err(ChildExitError {
                     kind: ChildExitErrorKind::ChildExit(exit),
@@ -139,7 +139,7 @@ impl ChildExit {
         if let Some(Err(e)) = replace(&mut self.read_thread, None) {
             return Err(ChildExitError {
                 kind: ChildExitErrorKind::ReadThread(e),
-                next: self.combine().err().map(Box::new)
+                next: self.combine().err().map(Box::new),
             });
         }
         if let Some(Err(e)) = self.write_thread {

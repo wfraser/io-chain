@@ -3,7 +3,7 @@ use std::os::fd::OwnedFd;
 use std::thread::JoinHandle;
 use std::{io, thread};
 
-use crate::misc::{ThreadPanicked, read_stream, write_stream};
+use crate::misc::{read_stream, write_stream, ThreadPanicked};
 use crate::{Filter, ReadStream, RunningFilter, WriteStream};
 
 /// A transparent operation to be performed on a stream of data.
@@ -18,9 +18,7 @@ pub trait Lambda: Sized {
     fn finish(self) -> Self::FinishResult;
 }
 
-impl<F> Lambda for F
-    where F: FnMut(&[u8]) + Send
-{
+impl<F: FnMut(&[u8]) + Send> Lambda for F {
     type FinishResult = ();
 
     fn handle(&mut self, buf: &[u8]) {
@@ -48,12 +46,7 @@ impl<F: Lambda + Send + 'static> Filter for LambdaFilter<F> {
     type Running = RunningLambda<F::FinishResult>;
     type Error = io::Error;
 
-    fn start(
-        self,
-        input: ReadStream,
-        output: WriteStream,
-    ) -> Result<Self::Running, Self::Error> {
-
+    fn start(self, input: ReadStream, output: WriteStream) -> Result<Self::Running, Self::Error> {
         let (mut input_rx, input_tx) = read_stream(input)?;
         let (output_tx, output_rx) = write_stream(output)?;
 
@@ -106,9 +99,7 @@ impl<R> RunningFilter for RunningLambda<R> {
     type Result = io::Result<R>;
 
     fn wait(self) -> Self::Result {
-        self.handle
-            .join()
-            .unwrap_or(Err(ThreadPanicked::ioerr()))
+        self.handle.join().unwrap_or(Err(ThreadPanicked::ioerr()))
     }
 
     fn input_pipe(&mut self) -> Option<OwnedFd> {

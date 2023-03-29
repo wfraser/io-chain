@@ -26,7 +26,9 @@ impl Display for ThreadPanicked {
 
 impl Error for ThreadPanicked {}
 
-pub(crate) fn read_stream(input: ReadStream) -> io::Result<(Box<dyn Read + Send>, Option<PipeWriter>)> {
+pub(crate) fn read_stream(
+    input: ReadStream,
+) -> io::Result<(Box<dyn Read + Send>, Option<PipeWriter>)> {
     Ok(match input {
         ReadStream::Null => (Box::new(io::empty()), None),
         ReadStream::Fd(fd) => (Box::new(File::from(fd)), None),
@@ -38,7 +40,9 @@ pub(crate) fn read_stream(input: ReadStream) -> io::Result<(Box<dyn Read + Send>
     })
 }
 
-pub(crate) fn write_stream(output: WriteStream) -> io::Result<(Box<dyn Write + Send>, Option<PipeReader>)> {
+pub(crate) fn write_stream(
+    output: WriteStream,
+) -> io::Result<(Box<dyn Write + Send>, Option<PipeReader>)> {
     Ok(match output {
         WriteStream::Null => (Box::new(io::sink()), None),
         WriteStream::Fd(fd) => (Box::new(File::from(fd)), None),

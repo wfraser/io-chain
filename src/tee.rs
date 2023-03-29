@@ -1,13 +1,13 @@
 use std::io::{self, Read, Write};
 use std::os::fd::OwnedFd;
+use std::sync::mpsc::{sync_channel, SyncSender};
 use std::sync::Arc;
-use std::sync::mpsc::{SyncSender, sync_channel};
 use std::thread::{self, JoinHandle};
 
 use parking_lot::{Condvar, Mutex, RwLock};
 
-use crate::{Filter, RunningFilter, ReadStream, WriteStream};
 use crate::misc::{read_stream, ThreadPanicked};
+use crate::{Filter, ReadStream, RunningFilter, WriteStream};
 
 /// [`Tee`] takes input from a [`ReadStream`] and copies it simultaneously to
 /// any number of [`Write`] streams.
@@ -25,7 +25,7 @@ impl Tee {
             threads: vec![],
             channels: vec![],
             notify: Arc::new((Mutex::new(0), Condvar::new())),
-            buffer: Arc::new(RwLock::new(vec![0; buffer_size]))
+            buffer: Arc::new(RwLock::new(vec![0; buffer_size])),
         }
     }
 
@@ -71,15 +71,17 @@ impl Filter for Tee {
     /// [`Tee::add_output()`].
     ///
     /// The [`WriteStream`] parameter is not used.
-    fn start(self, input: ReadStream, _output_not_used: WriteStream)
-        -> Result<Self::Running, Self::Error>
-    {
+    fn start(
+        self,
+        input: ReadStream,
+        _output_not_used: WriteStream,
+    ) -> Result<Self::Running, Self::Error> {
         let (mut in_rx, in_tx) = read_stream(input)?;
 
         let buffer = self.buffer;
         let mut channels = self.channels;
         let mut threads = self.threads;
-        threads.insert(0, thread::spawn(move || {
+        let t = thread::spawn(move || {
             let (mx, cv) = &*self.notify;
             loop {
                 let mut buf_write = buffer.write();
@@ -105,7 +107,8 @@ impl Filter for Tee {
                 *n = 0;
             }
             Ok(())
-        }));
+        });
+        threads.insert(0, t); // wait on this thread before others
 
         Ok(RunningTee {
             threads,
@@ -124,7 +127,8 @@ impl RunningFilter for RunningTee {
     type Result = Vec<io::Result<()>>;
 
     fn wait(self) -> Self::Result {
-        self.threads.into_iter()
+        self.threads
+            .into_iter()
             .map(|t| t.join().unwrap_or(Err(ThreadPanicked::ioerr())))
             .collect()
     }

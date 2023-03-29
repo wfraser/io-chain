@@ -59,7 +59,7 @@ fn linux_yes_head_sha() {
     let yes = ChildProcess::new(Command::new("yes"));
     let head = {
         let mut cmd = Command::new("head");
-        cmd.arg("-c").arg(format!("{}", num_bytes));
+        cmd.arg("-c").arg(format!("{num_bytes}"));
         ChildProcess::new(cmd)
     };
     let count = LambdaFilter::new(move |buf: &[u8]| {
