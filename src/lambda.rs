@@ -1,19 +1,42 @@
-use std::fs::File;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::os::fd::OwnedFd;
 use std::thread::JoinHandle;
 use std::{io, thread};
 
-use crate::misc::{DevNull, ThreadPanicked};
+use crate::misc::{ThreadPanicked, read_stream, write_stream};
 use crate::{Filter, ReadStream, RunningFilter, WriteStream};
+
+/// A transparent operation to be performed on a stream of data.
+pub trait Lambda: Sized {
+    /// The result from calling [`Lambda::finish()`] when the stream is done.
+    type FinishResult: Send;
+
+    /// Do something with a buffer of data.
+    fn handle(&mut self, buf: &[u8]);
+
+    /// Called when the stream is finished.
+    fn finish(self) -> Self::FinishResult;
+}
+
+impl<F> Lambda for F
+    where F: FnMut(&[u8]) + Send
+{
+    type FinishResult = ();
+
+    fn handle(&mut self, buf: &[u8]) {
+        (self)(buf);
+    }
+
+    fn finish(self) -> Self::FinishResult {}
+}
 
 /// An I/O filter which runs a closure of Rust code on each buffer, but otherwise does not alter the
 /// data stream.
-pub struct Lambda<F> {
+pub struct LambdaFilter<F> {
     handler: F,
 }
 
-impl<F: Fn(&[u8])> Lambda<F> {
+impl<F: Lambda> LambdaFilter<F> {
     /// Create a new instance from a given closure. The closure will be invoked on each buffer that
     /// is forwarded through the filter.
     pub fn new(handler: F) -> Self {
@@ -21,107 +44,71 @@ impl<F: Fn(&[u8])> Lambda<F> {
     }
 }
 
-impl<F: Fn(&[u8]) + Send + 'static> Filter for Lambda<F> {
-    type Running = RunningLambda;
-
+impl<F: Lambda + Send + 'static> Filter for LambdaFilter<F> {
+    type Running = RunningLambda<F::FinishResult>;
     type Error = io::Error;
 
     fn start(
         self,
-        mut input: ReadStream,
-        mut output: WriteStream,
+        input: ReadStream,
+        output: WriteStream,
     ) -> Result<Self::Running, Self::Error> {
-        let mut input_rx = None;
-        let mut input_tx = None;
-        if let ReadStream::PipeRequested = input {
-            let (rx, tx) = os_pipe::pipe()?;
-            input_rx = Some(rx);
-            input_tx = Some(OwnedFd::from(tx));
-        }
 
-        let mut output_rx = None;
-        let mut output_tx = None;
-        if let WriteStream::PipeRequested = output {
-            let (rx, tx) = os_pipe::pipe()?;
-            output_rx = Some(OwnedFd::from(rx));
-            output_tx = Some(tx);
-        }
+        let (mut input_rx, input_tx) = read_stream(input)?;
+        let (output_tx, output_rx) = write_stream(output)?;
 
         let handle = thread::spawn(move || {
-            let mut devnull = DevNull;
-            let mut read_file: File;
-            let src: &mut dyn Read = match input {
-                ReadStream::Null => {
-                    // lol
-                    return Ok(0);
-                }
-                ReadStream::Fd(fd) => {
-                    read_file = File::from(fd);
-                    &mut read_file
-                }
-                ReadStream::Rust(ref mut rust) => rust,
-                ReadStream::PipeRequested => input_rx.as_mut().unwrap(),
-            };
-
-            let mut write_file: File;
-            let dst: &mut dyn Write = match output {
-                WriteStream::Null => &mut devnull,
-                WriteStream::Fd(fd) => {
-                    write_file = File::from(fd);
-                    &mut write_file
-                }
-                WriteStream::Rust(ref mut rust) => rust,
-                WriteStream::PipeRequested => output_tx.as_mut().unwrap(),
-            };
-
-            struct Shim<F, W> {
-                f: F,
-                w: W,
-            }
-            impl<F: Fn(&[u8]), W: Write> Write for Shim<F, W> {
-                fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-                    match self.w.write(buf) {
-                        Ok(n) => {
-                            // Only process the bytes which were successfully forwarded.
-                            (self.f)(&buf[0..n]);
-                            Ok(n)
-                        }
-                        Err(e) => Err(e),
-                    }
-                }
-                fn flush(&mut self) -> io::Result<()> {
-                    Ok(())
-                }
-            }
             let mut shim = Shim {
-                f: self.handler,
-                w: dst,
+                handler: self.handler,
+                next_write: output_tx,
             };
-
-            io::copy(src, &mut shim)
+            io::copy(&mut input_rx, &mut shim)?;
+            Ok(shim.handler.finish())
         });
         Ok(RunningLambda {
             handle,
-            input_pipe: input_tx,
-            output_pipe: output_rx,
+            input_pipe: input_tx.map(Into::into),
+            output_pipe: output_rx.map(Into::into),
         })
     }
 }
 
+struct Shim<F, W> {
+    handler: F,
+    next_write: W,
+}
+
+impl<F: Lambda, W: Write> Write for Shim<F, W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self.next_write.write(buf) {
+            Ok(n) => {
+                // Only process the bytes which were successfully forwarded.
+                self.handler.handle(&buf[0..n]);
+                Ok(n)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 /// A running instance of a [`Lambda`] I/O filter.
-pub struct RunningLambda {
-    handle: JoinHandle<io::Result<u64>>,
+pub struct RunningLambda<R> {
+    handle: JoinHandle<io::Result<R>>,
     input_pipe: Option<OwnedFd>,
     output_pipe: Option<OwnedFd>,
 }
 
-impl RunningFilter for RunningLambda {
-    type Result = io::Result<u64>;
+impl<R> RunningFilter for RunningLambda<R> {
+    type Result = io::Result<R>;
 
     fn wait(self) -> Self::Result {
         self.handle
             .join()
-            .unwrap_or(Err(io::Error::new(io::ErrorKind::Other, ThreadPanicked)))
+            .unwrap_or(Err(ThreadPanicked::ioerr()))
     }
 
     fn input_pipe(&mut self) -> Option<OwnedFd> {

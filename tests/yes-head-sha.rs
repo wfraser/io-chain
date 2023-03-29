@@ -4,7 +4,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use io_chain::{ChildProcess, Filter, Lambda, ReadStream, RunningFilter, WriteStream};
+use io_chain::{ChildProcess, Filter, LambdaFilter, ReadStream, RunningFilter, WriteStream};
 use parking_lot::{Mutex, MutexGuard};
 
 #[derive(Debug)]
@@ -62,7 +62,7 @@ fn linux_yes_head_sha() {
         cmd.arg("-c").arg(format!("{}", num_bytes));
         ChildProcess::new(cmd)
     };
-    let count = Lambda::new(move |buf| {
+    let count = LambdaFilter::new(move |buf: &[u8]| {
         num_bytes_write.fetch_add(buf.len() as u64, std::sync::atomic::Ordering::Relaxed);
     });
     let sha = ChildProcess::new(Command::new("sha256sum"));
@@ -92,25 +92,17 @@ fn linux_yes_head_sha() {
         )
         .unwrap();
 
-    let (yes, [yes_t1, yes_t2]) = yes.wait();
-    assert!(!yes.as_ref().unwrap().success());
-    assert_eq!(yes.unwrap().signal(), Some(13));
-    assert!(yes_t1.is_none());
-    assert!(yes_t2.is_none());
+    let yes = yes.wait();
+    assert_eq!(yes.child.unwrap().signal(), Some(libc::SIGPIPE));
+    assert!(yes.read_thread.is_none());
+    assert!(yes.write_thread.is_none());
 
-    let (head, [head_t1, head_t2]) = head.wait();
-    assert!(head.unwrap().success());
-    assert!(head_t1.is_none());
-    assert!(head_t2.is_none());
+    head.wait().combine().unwrap();
 
-    let count = count.wait();
-    assert_eq!(count.unwrap(), num_bytes);
+    let () = count.wait().unwrap();
     assert_eq!(num_bytes_read.load(Ordering::SeqCst), num_bytes);
 
-    let (sha, [sha_t1, sha_t2]) = sha.wait();
-    assert!(sha.unwrap().success());
-    assert!(sha_t1.is_none());
-    assert!(sha_t2.unwrap().is_ok());
+    sha.wait().combine().unwrap();
 
     let out_str = String::from_utf8_lossy(&output.bytes()).into_owned();
     assert_eq!(
