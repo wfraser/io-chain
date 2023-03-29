@@ -10,8 +10,10 @@
 mod lambda;
 mod misc;
 mod process;
+mod tee;
 mod traits;
 
 pub use lambda::{Lambda, LambdaFilter, RunningLambda};
 pub use process::{ChildProcess, RunningChild};
+pub use tee::{RunningTee, Tee};
 pub use traits::{Filter, ReadStream, RunningFilter, WriteStream};
