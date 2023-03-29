@@ -6,7 +6,7 @@ use std::thread::{self, JoinHandle};
 
 use parking_lot::{Condvar, Mutex, RwLock};
 
-use crate::misc::{read_stream, ThreadPanicked};
+use crate::misc::{read_stream, write_stream, ThreadPanicked};
 use crate::{Filter, ReadStream, RunningFilter, WriteStream};
 
 /// [`Tee`] takes input from a [`ReadStream`] and copies it simultaneously to
@@ -67,16 +67,24 @@ impl Filter for Tee {
     type Running = RunningTee;
     type Error = io::Error;
 
-    /// Starts copying to the streams added previously with
-    /// [`Tee::add_output()`].
+    /// Starts copying `input` to the streams added previously with
+    /// [`Tee::add_output()`] and to `output`, all in parallel.
     ///
-    /// The [`WriteStream`] parameter is not used.
+    /// If all streams were specified already, setting `output` to
+    /// `WriteStream::Null` will add no additional overhead.
     fn start(
-        self,
+        mut self,
         input: ReadStream,
-        _output_not_used: WriteStream,
+        output: WriteStream,
     ) -> Result<Self::Running, Self::Error> {
         let (mut in_rx, in_tx) = read_stream(input)?;
+        let mut output_pipe = None;
+
+        if !matches!(output, WriteStream::Null) {
+            let (out_tx, out_rx) = write_stream(output)?;
+            self.add_output(out_tx);
+            output_pipe = out_rx.map(Into::into);
+        }
 
         let buffer = self.buffer;
         let mut channels = self.channels;
@@ -113,6 +121,7 @@ impl Filter for Tee {
         Ok(RunningTee {
             threads,
             input_pipe: in_tx.map(Into::into),
+            output_pipe,
         })
     }
 }
@@ -121,6 +130,7 @@ impl Filter for Tee {
 pub struct RunningTee {
     threads: Vec<JoinHandle<io::Result<()>>>,
     input_pipe: Option<OwnedFd>,
+    output_pipe: Option<OwnedFd>,
 }
 
 impl RunningFilter for RunningTee {
@@ -138,6 +148,6 @@ impl RunningFilter for RunningTee {
     }
 
     fn output_pipe(&mut self) -> Option<OwnedFd> {
-        None
+        self.output_pipe.take()
     }
 }
