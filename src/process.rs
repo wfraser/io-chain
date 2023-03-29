@@ -1,4 +1,7 @@
+use std::error::Error;
+use std::fmt::Display;
 use std::os::fd::OwnedFd;
+use std::os::unix::process::ExitStatusExt;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::thread::JoinHandle;
 use std::{io, thread};
@@ -78,18 +81,23 @@ pub struct RunningChild {
 impl RunningFilter for RunningChild {
     /// The result from the process, and the results from the threads doing copies to the input and
     /// output pipes, respectively, if either were created.
-    type Result = (io::Result<ExitStatus>, [Option<io::Result<()>>; 2]);
+    type Result = ChildExit;
 
     fn wait(mut self) -> Self::Result {
         let errs = self.threads.map(|t| match t {
             Some(t) => match t.join() {
-                Err(_) => Some(Err(io::Error::new(io::ErrorKind::Other, ThreadPanicked))),
+                Err(_) => Some(Err(ThreadPanicked::ioerr())),
                 Ok(Err(e)) => Some(Err(e)),
                 Ok(Ok(_n)) => Some(Ok(())),
-            },
+            }
             None => None,
         });
-        (self.child.wait(), errs)
+        let [read_thread, write_thread] = errs;
+        ChildExit {
+            child: self.child.wait(),
+            read_thread,
+            write_thread,
+        }
     }
 
     fn input_pipe(&mut self) -> Option<OwnedFd> {
@@ -98,5 +106,85 @@ impl RunningFilter for RunningChild {
 
     fn output_pipe(&mut self) -> Option<OwnedFd> {
         self.child.stdout.take().map(Into::into)
+    }
+}
+
+/// Running a [`ChildProcess`] involves potentially as many as 3 operations that can fail: the child
+/// process itself, a copy thread for the input and/or output (if one is required).
+pub struct ChildExit {
+    pub child: io::Result<ExitStatus>,
+    pub read_thread: Option<io::Result<()>>,
+    pub write_thread: Option<io::Result<()>>,
+}
+
+impl ChildExit {
+    /// Combine the result of the child process exit and any threads into one Result.
+    pub fn combine(mut self) -> Result<(), ChildExitError> {
+        use std::mem::replace;
+        match replace(&mut self.child, Ok(ExitStatus::from_raw(0))) {
+            Err(e) => {
+                return Err(ChildExitError {
+                    kind: ChildExitErrorKind::ChildWait(e),
+                    next: self.combine().err().map(Box::new),
+                });
+            },
+            Ok(exit) if !exit.success() => {
+                return Err(ChildExitError {
+                    kind: ChildExitErrorKind::ChildExit(exit),
+                    next: self.combine().err().map(Box::new),
+                });
+            }
+            Ok(_) => (),
+        }
+        if let Some(Err(e)) = replace(&mut self.read_thread, None) {
+            return Err(ChildExitError {
+                kind: ChildExitErrorKind::ReadThread(e),
+                next: self.combine().err().map(Box::new)
+            });
+        }
+        if let Some(Err(e)) = self.write_thread {
+            return Err(ChildExitError {
+                kind: ChildExitErrorKind::WriteThread(e),
+                next: None,
+            });
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct ChildExitError {
+    pub kind: ChildExitErrorKind,
+    pub next: Option<Box<ChildExitError>>,
+}
+
+impl Display for ChildExitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.kind.fmt(f)?;
+        if let Some(next) = &self.next {
+            write!(f, "\n   and also {next}")?;
+        }
+        Ok(())
+    }
+}
+
+impl Error for ChildExitError {}
+
+#[derive(Debug)]
+pub enum ChildExitErrorKind {
+    ChildWait(io::Error),
+    ChildExit(ExitStatus),
+    ReadThread(io::Error),
+    WriteThread(io::Error),
+}
+
+impl Display for ChildExitErrorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ChildExitErrorKind::ChildWait(e) => write!(f, "failed to wait on child process: {e}"),
+            ChildExitErrorKind::ChildExit(e) => write!(f, "child exited unsuccessfully: {e}"),
+            ChildExitErrorKind::ReadThread(e) => write!(f, "read copy thread failed: {e}"),
+            ChildExitErrorKind::WriteThread(e) => write!(f, "Write copy thread failed: {e}"),
+        }
     }
 }
